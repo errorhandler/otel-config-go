@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/honeycombio/otel-config-go/otelconfig/pipelines"
 	"github.com/sethvargo/go-envconfig"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+
+	"github.com/honeycombio/otel-config-go/otelconfig/pipelines"
 )
 
 var (
@@ -254,6 +254,20 @@ func WithSampler(sampler trace.Sampler) Option {
 	}
 }
 
+// WithDisableHostMetrics disables collection of host metrics
+func WithDisableHostMetrics(disable bool) Option {
+	return func(c *Config) {
+		c.DisableHostMetrics = disable
+	}
+}
+
+// WithDisableRuntimeMetrics disables collection of runtime metrics
+func WithDisableRuntimeMetrics(disable bool) Option {
+	return func(c *Config) {
+		c.DisableRuntimeMetrics = disable
+	}
+}
+
 // Logger is an interface for a logger that can be passed to WithLogger.
 type Logger interface {
 	Fatalf(format string, v ...interface{})
@@ -322,12 +336,14 @@ type Config struct {
 	TracesHeaders                   map[string]string `env:"OTEL_EXPORTER_OTLP_TRACES_HEADERS,overwrite,separator=="`
 	MetricsHeaders                  map[string]string `env:"OTEL_EXPORTER_OTLP_METRICS_HEADERS,overwrite,separator=="`
 	ResourceAttributes              map[string]string `env:"OTEL_RESOURCE_ATTRIBUTES,overwrite,separator=="`
+	DisableRuntimeMetrics           bool
+	DisableHostMetrics              bool
 	SpanProcessors                  []trace.SpanProcessor
 	Sampler                         trace.Sampler
 	ResourceOptions                 []resource.Option
 	Resource                        *resource.Resource
-	Logger                          Logger                  `json:"-"`
-	ShutdownFunctions               []func(c *Config) error `json:"-"`
+	Logger                          Logger                  `                                                               json:"-"`
+	ShutdownFunctions               []func(c *Config) error `                                                               json:"-"`
 	errorHandler                    otel.ErrorHandler
 }
 
@@ -372,7 +388,6 @@ func newConfig(opts ...Option) (*Config, error) {
 
 	var err error
 	c.Resource, err = newResource(c)
-
 	if err != nil {
 		if errors.Is(err, resource.ErrSchemaURLConflict) {
 			c.Logger.Debugf("schema conflict %v", err)
@@ -405,10 +420,16 @@ func newResource(c *Config) (*resource.Resource, error) {
 	}
 	options = append(options, c.ResourceOptions...)
 	if c.ServiceName != "" {
-		options = append(options, resource.WithAttributes(semconv.ServiceNameKey.String(c.ServiceName)))
+		options = append(
+			options,
+			resource.WithAttributes(semconv.ServiceNameKey.String(c.ServiceName)),
+		)
 	}
 	if c.ServiceVersion != "" {
-		options = append(options, resource.WithAttributes(semconv.ServiceVersionKey.String(c.ServiceVersion)))
+		options = append(
+			options,
+			resource.WithAttributes(semconv.ServiceVersionKey.String(c.ServiceVersion)),
+		)
 	}
 	options = append(options, resource.WithHost())
 	options = append(options, resource.WithAttributes(
@@ -542,7 +563,10 @@ func (c *Config) getMetricsEndpoint() (string, bool) {
 	}
 
 	if c.MetricsExporterProtocol == ProtocolGRPC {
-		c.MetricsExporterEndpoint = trimHttpScheme(c.MetricsExporterEndpoint, ProtocolGRPC)
+		c.MetricsExporterEndpoint = trimHttpScheme(
+			c.MetricsExporterEndpoint,
+			ProtocolGRPC,
+		)
 	}
 
 	// use metrics specific port, failling back to generic version if not set
@@ -624,12 +648,14 @@ func setupMetrics(c *Config) (func() error, error) {
 	}
 
 	return pipelines.NewMetricsPipeline(pipelines.PipelineConfig{
-		Protocol:        pipelines.Protocol(c.MetricsExporterProtocol),
-		Endpoint:        trimHttpScheme(endpoint, c.MetricsExporterProtocol),
-		Insecure:        insecure,
-		Headers:         c.getMetricsHeaders(),
-		Resource:        c.Resource,
-		ReportingPeriod: c.MetricsReportingPeriod,
+		Protocol:              pipelines.Protocol(c.MetricsExporterProtocol),
+		Endpoint:              trimHttpScheme(endpoint, c.MetricsExporterProtocol),
+		Insecure:              insecure,
+		Headers:               c.getMetricsHeaders(),
+		Resource:              c.Resource,
+		ReportingPeriod:       c.MetricsReportingPeriod,
+		DisableRuntimeMetrics: c.DisableRuntimeMetrics,
+		DisableHostMetrics:    c.DisableHostMetrics,
 	})
 }
 
@@ -682,7 +708,10 @@ func (ls OtelConfig) Shutdown() {
 	for _, shutdown := range ls.config.ShutdownFunctions {
 		err := shutdown(ls.config)
 		if err != nil {
-			ls.config.Logger.Fatalf("failed to stop exporter while calling config shutdown: %v", err)
+			ls.config.Logger.Fatalf(
+				"failed to stop exporter while calling config shutdown: %v",
+				err,
+			)
 		}
 	}
 
